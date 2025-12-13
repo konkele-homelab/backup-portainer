@@ -5,92 +5,66 @@ set -eu
 # Default variables
 # ----------------------
 : "${APP_NAME:=Portainer}"
-: "${BACKUP_DEST:=/backup}"
-: "${KEEP_DAYS:=30}"
-: "${DRY_RUN:=false}"
-: "${TZ:=America/Chicago}"
-: "${TIMESTAMP:=$(date '+%Y-%m-%d_%H-%M-%S')}"
-
 : "${SERVERS_FILE:=/config/servers}"
 : "${PROTO:=https}"
+: "${SNAPSHOT_DIR:?SNAPSHOT_DIR not set by wrapper}"
 
 export APP_NAME
 # ----------------------
 # Portainer Backup
 # ----------------------
 portainer_backup() {
-    host="$1"
-    apiKey="$2"
+    (
+        host="$1"
+        apiKey="$2"
 
-    # Ensure backup destination exists
-    mkdir -p "$BACKUP_DEST"
-    serverURL="${PROTO}://${host}"
+        serverURL="${PROTO}://${host}"
 
-    # Build backup filename
-    backup="${BACKUP_DEST}/${host}-${TIMESTAMP}.tar.gz"
+        backup_file="${SNAPSHOT_DIR}/${host}.tar.gz"
 
-    log "Starting backup for ${host}"
+        [ "$DRY_RUN" != "true" ] && mkdir -p "$SNAPSHOT_DIR"
 
-    # Dry run
-    if [ "$DRY_RUN" = "true" ]; then
-        log "[DRY RUN] Would perform backup for ${host}, saving to ${backup}"
-        return 0
-    fi
+        log "Starting TrueNAS backup for $host -> $backup_file"
 
-    # Request configuration backup
-    if ! curl -sk -X POST \
-        -H "X-API-Key: ${apiKey}" \
-        -H "Content-Type: application/json; charset=utf-8" \
-        -d '{ "password": "" }' \
-        "${serverURL}/api/backup" \
-        -o "$backup"
-    then
-        log_error "${host}: Backup failed (API error)"
-        rm -f "$backup"
-        return 1
-    fi
+        if [ "$DRY_RUN" = "true" ]; then
+            log "[DRY RUN] Would download backup for $host to $backup_file"
+            return 0
+        fi
 
-    # Validate output file.
-    if [ ! -s "$backup" ]; then
-        log_error "${host}: Backup file is missing or empty"
-        rm -f "$backup"
-        return 1
-    fi
+        # Download backup
+        curl -sk -X POST \
+            -H "X-API-Key: ${apiKey}" \
+            -H "Content-Type: application/json; charset=utf-8" \
+            -d '{ "password": "" }' \
+            "${serverURL}/api/backup" \
+            -o "$backup_file" || {
+                log_error "${host}: Backup download failed"
+                rm -f "$backup_file"
+                return 1
+            }
 
-    # Secure file
-    chmod 600 "$backup"
+        # Validate file is not empty
+        [ -s "$backup_file" ] || {
+            log_error "$host: Backup file empty"
+            rm -f "$backup_file"
+            return 1
+        }
 
-    log "Backup saved: ${backup}"
+        chmod 600 "$backup_file"
+        log "Backup completed for $host: $backup_file"
+    )
 }
 
 # ----------------------
 # Backup Execution
 # ----------------------
-if [ ! -f "$SERVERS_FILE" ]; then
-    log_error "Servers file not found: ${SERVERS_FILE}"
-    exit 1
-fi
+[ -f "$SERVERS_FILE" ] || { log_error "Servers file missing: $SERVERS_FILE"; exit 1; }
 
-# Read server list line by line
-while IFS= read -r line || [ -n "$line" ]; do
-    # Skip empty lines
-    [ -z "$line" ] && continue
+while IFS=: read -r host apiKey || [ -n "$host" ]; do
+    [ -z "$host" ] && continue
+    [ -n "$apiKey" ] || { log_error "$host: Missing API key"; continue; }
 
-    # Split host and API key using POSIX tools
-    host=$(echo "$line" | awk -F: '{print $1}')
-    api=$(echo "$line" | awk -F: '{print $2}')
-
-    if [ -z "$host" ] || [ -z "$api" ]; then
-        log_error "Invalid entry in servers file: ${line}"
-        continue
-    fi
-
-    # Run backup
-    portainer_backup "$host" "$api"
-
-    # Prune old backups
-    prune_by_timestamp "${host}-*" "$KEEP_DAYS" "$BACKUP_DEST"
-
+    portainer_backup "$host" "$apiKey"
 done < "$SERVERS_FILE"
 
 # ----------------------
