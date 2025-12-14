@@ -1,7 +1,11 @@
+# Default Arguments for Upstream Base Image
+ARG UPSTREAM_REGISTRY=registry.example.com
 ARG UPSTREAM_TAG=latest
-FROM registry.lab.konkel.us/backup-base:${UPSTREAM_TAG}
 
-# Portainer Backup Script
+# Use Upstream Base Image
+FROM ${UPSTREAM_REGISTRY}/backup-base:${UPSTREAM_TAG}
+
+# App Specific Backup Script
 ARG SCRIPT_FILE=backup-portainer.sh
 
 # Install Application Specific Backup Script
